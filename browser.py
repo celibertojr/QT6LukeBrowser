@@ -1,7 +1,7 @@
-
 import sys
 import json
 import os
+from urllib.parse import urlparse
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -18,10 +18,9 @@ from PyQt6.QtWidgets import (
     QDialog,
     QListWidget,
 )
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
-from PyQt6.QtWebEngineCore import QWebEngineUrlRequestInterceptor
+from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage, QWebEngineUrlRequestInterceptor
 from PyQt6.QtCore import QUrl
 
 class CustomWebEnginePage(QWebEnginePage):
@@ -29,8 +28,14 @@ class CustomWebEnginePage(QWebEnginePage):
         super().__init__(profile, parent)
 
     def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
-        # Filtrar mensagens relacionadas ao 'unload'
-        if "Unrecognized feature: 'unload'" not in message:
+        silenced = [
+            "Unrecognized feature:",
+            "non-JS module files deprecated",
+            "Deprecated API",
+            "Permissions-Policy",
+            "crbug/"
+        ]
+        if not any(s in message for s in silenced):
             super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
 
 class ManageBlockedSitesDialog(QDialog):
@@ -41,26 +46,16 @@ class ManageBlockedSitesDialog(QDialog):
         self.blocked_sites = blocked_sites
         self.remove_callback = remove_callback
 
-        # Layout principal
         layout = QVBoxLayout()
-
-        # Lista de sites bloqueados
         self.list_widget = QListWidget()
         layout.addWidget(self.list_widget)
-
-        # Botão para remover site selecionado
         self.remove_button = QPushButton("Remover Site Selecionado")
         self.remove_button.clicked.connect(self.remove_selected_site)
         layout.addWidget(self.remove_button)
-
-        # Botão para fechar
         self.close_button = QPushButton("Fechar")
         self.close_button.clicked.connect(self.accept)
         layout.addWidget(self.close_button)
-
         self.setLayout(layout)
-
-        # Atualizar lista após a criação dos widgets
         self.update_list()
 
     def update_list(self):
@@ -76,39 +71,33 @@ class ManageBlockedSitesDialog(QDialog):
             self.remove_callback(url)
             self.update_list()
 
-
 class DomainBlocker(QWebEngineUrlRequestInterceptor):
     def __init__(self, blocked_domains):
         super().__init__()
         self.blocked_domains = blocked_domains
 
     def interceptRequest(self, info):
-        from urllib.parse import urlparse
         url = info.requestUrl().toString()
         domain = urlparse(url).netloc.lower()
         for blocked in self.blocked_domains:
             blocked_domain = urlparse(blocked).netloc.lower()
-            if blocked_domain and blocked_domain in domain:
+            if blocked_domain and blocked_domain == domain:  # Comparação exata
                 info.block(True)
+                print(f"Bloqueando URL: {url} (domínio: {blocked_domain})")
                 return
+
 class Browser(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Navegador Avançado")
         self.setGeometry(100, 100, 1200, 800)
 
-        # Lista para armazenar histórico
         self.history = []
-
-        # Carregar favoritos
         self.bookmarks_file = "bookmarks.json"
         self.bookmarks = self.load_bookmarks()
-
-        # Carregar sites bloqueados
         self.blocked_sites_file = "blocked_sites.json"
         self.blocked_sites = self.load_blocked_sites()
 
-        # Perfil para navegação anônima
         self.private_profile = QWebEngineProfile("private_profile", self)
         self.private_profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
         self.private_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
@@ -119,16 +108,12 @@ class Browser(QMainWindow):
         self.private_profile.setUrlRequestInterceptor(self.blocker)
         self.setup_menus()
         self.setup_signals()
-
-        # Adicionar aba inicial
         self.add_new_tab(QUrl("https://www.google.com"), "Página Inicial")
 
     def setup_ui(self):
-        # Criar widget de abas
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
 
-        # Criar barra de navegação
         self.url_bar = QLineEdit()
         self.url_bar.setPlaceholderText("Digite a URL e pressione Enter")
 
@@ -144,39 +129,40 @@ class Browser(QMainWindow):
         self.new_tab_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_FileDialogNewFolder), "")
         self.new_tab_button.setToolTip("Abrir nova aba")
 
+        private_icon_path = "private.png"
+        if os.path.exists(private_icon_path):
+            self.new_private_tab_button = QPushButton(QIcon(private_icon_path), "")
+        else:
+            self.new_private_tab_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_DirIcon), "")
+        self.new_private_tab_button.setToolTip("Abrir aba anônima")
+
         self.bookmark_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_DialogYesButton), "")
         self.bookmark_button.setToolTip("Adicionar a página atual aos favoritos")
 
-        # Barra de progresso
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximum(100)
         self.progress_bar.setVisible(False)
 
-        # Layout da barra de navegação
         nav_layout = QHBoxLayout()
         nav_layout.addWidget(self.back_button)
         nav_layout.addWidget(self.forward_button)
         nav_layout.addWidget(self.reload_button)
         nav_layout.addWidget(self.new_tab_button)
+        nav_layout.addWidget(self.new_private_tab_button)
         nav_layout.addWidget(self.bookmark_button)
         nav_layout.addWidget(self.url_bar)
 
-        # Layout principal
         main_layout = QVBoxLayout()
         main_layout.addLayout(nav_layout)
         main_layout.addWidget(self.progress_bar)
         main_layout.addWidget(self.tabs)
 
-        # Configurar widget central
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
     def setup_menus(self):
-        # Criar barra de menus
         self.menu_bar = self.menuBar()
-
-        # Menu Arquivo
         self.file_menu = self.menu_bar.addMenu("Arquivo")
 
         self.new_page_action = QAction("Nova Página", self)
@@ -191,27 +177,20 @@ class Browser(QMainWindow):
         self.exit_action.setShortcut("Ctrl+Q")
         self.file_menu.addAction(self.exit_action)
 
-        # Menu Ferramentas
         self.tools_menu = self.menu_bar.addMenu("Ferramentas")
         self.tools_history_menu = self.tools_menu.addMenu("Histórico")
 
-        # Ação para bloquear site
         self.block_site_action = QAction("Bloquear Site", self)
         self.tools_menu.addAction(self.block_site_action)
 
-        # Ação para gerenciar sites bloqueados
         self.manage_blocked_sites_action = QAction("Gerenciar Sites Bloqueados", self)
         self.tools_menu.addAction(self.manage_blocked_sites_action)
 
-        # Ação para limpar histórico
         self.limpar_historico_action = QAction("Limpar Histórico", self)
         self.tools_menu.addAction(self.limpar_historico_action)
 
-        # Menu Favoritos
         self.bookmarks_menu = self.menu_bar.addMenu("Favoritos")
         self.update_bookmarks_menu()
-
-        # Atualizar menu de histórico em Ferramentas
         self.update_history_menu()
 
     def setup_signals(self):
@@ -222,6 +201,7 @@ class Browser(QMainWindow):
         self.forward_button.clicked.connect(self.forward)
         self.reload_button.clicked.connect(self.reload)
         self.new_tab_button.clicked.connect(self.add_new_tab)
+        self.new_private_tab_button.clicked.connect(self.add_new_private_tab)
         self.bookmark_button.clicked.connect(self.add_to_bookmarks)
         self.new_page_action.triggered.connect(self.nova_pagina)
         self.private_tab_action.triggered.connect(self.add_new_private_tab)
@@ -232,6 +212,9 @@ class Browser(QMainWindow):
 
     def load_bookmarks(self):
         try:
+            if not os.access(self.bookmarks_file, os.R_OK | os.W_OK):
+                print(f"Aviso: Permissões insuficientes para acessar {self.bookmarks_file}")
+                return []
             if os.path.exists(self.bookmarks_file):
                 with open(self.bookmarks_file, "r") as f:
                     data = json.load(f)
@@ -244,6 +227,9 @@ class Browser(QMainWindow):
 
     def save_bookmarks(self):
         try:
+            if not os.access(os.path.dirname(self.bookmarks_file) or '.', os.W_OK):
+                QMessageBox.warning(self, "Erro", f"Permissões insuficientes para salvar {self.bookmarks_file}")
+                return
             with open(self.bookmarks_file, "w") as f:
                 json.dump(self.bookmarks, f, indent=4)
         except IOError as e:
@@ -251,11 +237,26 @@ class Browser(QMainWindow):
 
     def load_blocked_sites(self):
         try:
+            if not os.access(self.blocked_sites_file, os.R_OK | os.W_OK):
+                print(f"Aviso: Permissões insuficientes para acessar {self.blocked_sites_file}")
+                return []
             if os.path.exists(self.blocked_sites_file):
                 with open(self.blocked_sites_file, "r") as f:
                     data = json.load(f)
                     if isinstance(data, list):
-                        return [url for url in data if isinstance(url, str)]
+                        normalized_urls = []
+                        for url in data:
+                            if isinstance(url, str):
+                                qurl = QUrl(url)
+                                if qurl.isValid():
+                                    try:
+                                        normalized_url = qurl.toString(QUrl.ComponentFormattingOption.FullyDecoded)
+                                        normalized_urls.append(normalized_url)
+                                    except Exception as e:
+                                        print(f"Erro ao normalizar URL {url}: {e}")
+                                else:
+                                    print(f"Aviso: URL inválida ignorada no arquivo de sites bloqueados: {url}")
+                        return normalized_urls
             return []
         except (json.JSONDecodeError, IOError) as e:
             QMessageBox.warning(self, "Erro", f"Falha ao carregar lista de sites bloqueados: {e}")
@@ -263,15 +264,18 @@ class Browser(QMainWindow):
 
     def save_blocked_sites(self):
         try:
+            if not os.access(os.path.dirname(self.blocked_sites_file) or '.', os.W_OK):
+                QMessageBox.warning(self, "Erro", f"Permissões insuficientes para salvar {self.blocked_sites_file}")
+                return
             with open(self.blocked_sites_file, "w") as f:
                 json.dump(self.blocked_sites, f, indent=4)
+            self.blocker.blocked_domains = self.blocked_sites  # Atualizar DomainBlocker
         except IOError as e:
             QMessageBox.warning(self, "Erro", f"Falha ao salvar lista de sites bloqueados: {e}")
 
     def block_site(self):
         url, ok = QInputDialog.getText(self, "Bloquear Site", "Digite a URL do site a ser bloqueado (ex: https://example.com):")
         if ok and url:
-            # Normalizar a URL (remover espaços e garantir formato)
             url = url.strip()
             if not url.startswith("http://") and not url.startswith("https://"):
                 url = "https://" + url
@@ -279,7 +283,11 @@ class Browser(QMainWindow):
             if not qurl.isValid():
                 QMessageBox.warning(self, "URL Inválida", "Por favor, insira uma URL válida.")
                 return
-            normalized_url = qurl.toString(QUrl.UrlFormattingOption.FullyDecoded)
+            try:
+                normalized_url = qurl.toString(QUrl.ComponentFormattingOption.FullyDecoded)
+            except Exception as e:
+                QMessageBox.warning(self, "Erro", f"Falha ao normalizar URL: {e}")
+                return
             if normalized_url not in self.blocked_sites:
                 self.blocked_sites.append(normalized_url)
                 self.save_blocked_sites()
@@ -331,7 +339,7 @@ class Browser(QMainWindow):
                 current_web_view.setUrl(QUrl(url))
 
     def add_new_tab(self, qurl=None, label="Nova Aba"):
-        if qurl is None or not isinstance(qurl, QUrl):
+        if qurl is None or not isinstance(qurl, QUrl) or not qurl.isValid():
             qurl = QUrl("https://www.google.com")
         web_view = QWebEngineView()
         page = CustomWebEnginePage(parent=web_view)
@@ -363,15 +371,18 @@ class Browser(QMainWindow):
         if self.tabs.count() > 1:
             web_view = self.tabs.widget(index)
             if web_view:
-                web_view.urlChanged.disconnect()
-                web_view.loadProgress.disconnect()
-                web_view.loadFinished.disconnect()
-                web_view.titleChanged.disconnect()
-                if web_view.page().profile() != self.private_profile:
-                    try:
-                        web_view.urlChanged.disconnect(self.add_to_history)
-                    except TypeError:
-                        pass  # Já desconectado ou não conectado
+                try:
+                    web_view.urlChanged.disconnect()
+                    web_view.loadProgress.disconnect()
+                    web_view.loadFinished.disconnect()
+                    web_view.titleChanged.disconnect()
+                    if web_view.page().profile() != self.private_profile:
+                        try:
+                            web_view.urlChanged.disconnect(self.add_to_history)
+                        except TypeError:
+                            pass
+                except Exception as e:
+                    print(f"Erro ao desconectar sinais da aba {index}: {e}")
             self.tabs.removeTab(index)
 
     def navigate_to_url(self):
@@ -384,11 +395,6 @@ class Browser(QMainWindow):
             qurl = QUrl("https://" + url_text)
         if not qurl.isValid():
             QMessageBox.warning(self, "URL Inválida", "A URL fornecida é inválida ou malformada.")
-            return
-        # Verificar se a URL está na lista de sites bloqueados
-        normalized_url = qurl.toString(QUrl.UrlFormattingOption.FullyDecoded)
-        if normalized_url in self.blocked_sites:
-            QMessageBox.warning(self, "Acesso Bloqueado", "Este site contém conteúdo perigoso e está bloqueado.")
             return
         current_web_view = self.tabs.currentWidget()
         if current_web_view:
@@ -428,7 +434,7 @@ class Browser(QMainWindow):
     def reload(self):
         current_web_view = self.tabs.currentWidget()
         if current_web_view:
-            current_web_view.setUrl(current_web_view.url())  # Forçar recarregamento
+            current_web_view.reload()
 
     def add_to_history(self, qurl):
         current_web_view = self.tabs.currentWidget()
@@ -477,7 +483,6 @@ class Browser(QMainWindow):
         super().closeEvent(event)
 
 if __name__ == "__main__":
-    # Evitar múltiplas instâncias do QApplication
     app = QApplication.instance() or QApplication(sys.argv)
     browser = Browser()
     browser.show()
