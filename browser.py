@@ -81,7 +81,7 @@ class DomainBlocker(QWebEngineUrlRequestInterceptor):
         domain = urlparse(url).netloc.lower()
         for blocked in self.blocked_domains:
             blocked_domain = urlparse(blocked).netloc.lower()
-            if blocked_domain and blocked_domain == domain:  # Comparação exata
+            if blocked_domain and blocked_domain == domain:
                 info.block(True)
                 print(f"Bloqueando URL: {url} (domínio: {blocked_domain})")
                 return
@@ -103,6 +103,8 @@ class Browser(QMainWindow):
         self.private_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
 
         self.setup_ui()
+        if self.tabs is None:
+            raise RuntimeError("QTabWidget não foi inicializado corretamente em setup_ui")
         self.blocker = DomainBlocker(self.blocked_sites)
         QWebEngineProfile.defaultProfile().setUrlRequestInterceptor(self.blocker)
         self.private_profile.setUrlRequestInterceptor(self.blocker)
@@ -126,6 +128,9 @@ class Browser(QMainWindow):
         self.reload_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload), "")
         self.reload_button.setToolTip("Recarregar a página atual")
 
+        self.home_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_DirHomeIcon), "")
+        self.home_button.setToolTip("Ir para a página inicial (Google)")
+
         self.new_tab_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_FileDialogNewFolder), "")
         self.new_tab_button.setToolTip("Abrir nova aba")
 
@@ -147,6 +152,7 @@ class Browser(QMainWindow):
         nav_layout.addWidget(self.back_button)
         nav_layout.addWidget(self.forward_button)
         nav_layout.addWidget(self.reload_button)
+        nav_layout.addWidget(self.home_button)
         nav_layout.addWidget(self.new_tab_button)
         nav_layout.addWidget(self.new_private_tab_button)
         nav_layout.addWidget(self.bookmark_button)
@@ -194,12 +200,15 @@ class Browser(QMainWindow):
         self.update_history_menu()
 
     def setup_signals(self):
+        if self.tabs is None:
+            raise RuntimeError("QTabWidget não está inicializado em setup_signals")
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self.update_url_bar_on_tab_change)
         self.url_bar.returnPressed.connect(self.navigate_to_url)
         self.back_button.clicked.connect(self.back)
         self.forward_button.clicked.connect(self.forward)
         self.reload_button.clicked.connect(self.reload)
+        self.home_button.clicked.connect(self.go_home)
         self.new_tab_button.clicked.connect(self.add_new_tab)
         self.new_private_tab_button.clicked.connect(self.add_new_private_tab)
         self.bookmark_button.clicked.connect(self.add_to_bookmarks)
@@ -209,6 +218,11 @@ class Browser(QMainWindow):
         self.limpar_historico_action.triggered.connect(self.limpar_historico)
         self.block_site_action.triggered.connect(self.block_site)
         self.manage_blocked_sites_action.triggered.connect(self.manage_blocked_sites)
+
+    def go_home(self):
+        current_web_view = self.tabs.currentWidget()
+        if current_web_view:
+            current_web_view.setUrl(QUrl("https://www.google.com"))
 
     def load_bookmarks(self):
         try:
@@ -269,7 +283,7 @@ class Browser(QMainWindow):
                 return
             with open(self.blocked_sites_file, "w") as f:
                 json.dump(self.blocked_sites, f, indent=4)
-            self.blocker.blocked_domains = self.blocked_sites  # Atualizar DomainBlocker
+            self.blocker.blocked_domains = self.blocked_sites
         except IOError as e:
             QMessageBox.warning(self, "Erro", f"Falha ao salvar lista de sites bloqueados: {e}")
 
@@ -484,6 +498,109 @@ class Browser(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication.instance() or QApplication(sys.argv)
+    app.setStyleSheet("""
+        QMainWindow {
+            background-color: #f5f5f5;
+        }
+        QMenuBar {
+            background-color: #ffffff;
+            color: #333333;
+            font-size: 12px;
+        }
+        QMenuBar::item {
+            background-color: #ffffff;
+            padding: 5px 10px;
+        }
+        QMenuBar::item:selected {
+            background-color: #e0e0e0;
+        }
+        QMenu {
+            background-color: #ffffff;
+            color: #333333;
+            border: 1px solid #cccccc;
+        }
+        QMenu::item {
+            padding: 5px 20px;
+        }
+        QMenu::item:selected {
+            background-color: #28a745;
+            color: #ffffff;
+        }
+        QPushButton {
+            background-color: #28a745;
+            color: #ffffff;
+            border: none;
+            border-radius: 5px;
+            padding: 5px;
+            min-width: 30px;
+            min-height: 30px;
+        }
+        QPushButton:hover {
+            background-color: #218838;
+        }
+        QPushButton:pressed {
+            background-color: #1e7e34;
+        }
+        QLineEdit {
+            background-color: #ffffff;
+            color: #333333;
+            border: 1px solid #cccccc;
+            border-radius: 5px;
+            padding: 5px;
+            font-size: 12px;
+        }
+        QTabWidget::pane {
+            border: 1px solid #cccccc;
+            background-color: #f5f5f5;
+        }
+        QTabBar::tab {
+            background-color: #e0e0e0;
+            color: #333333;
+            padding: 8px 15px;
+            border-top-left-radius: 5px;
+            border-top-right-radius: 5px;
+            margin-right: 2px;
+        }
+        QTabBar::tab:selected {
+            background-color: #28a745;
+            color: #ffffff;
+            font-weight: bold;
+        }
+        QTabBar::tab:hover {
+            background-color: #d0d0d0;
+        }
+        QProgressBar {
+            background-color: #e0e0e0;
+            border: 1px solid #cccccc;
+            border-radius: 5px;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #28a745;
+            border-radius: 5px;
+        }
+        QDialog {
+            background-color: #f5f5f5;
+            color: #333333;
+        }
+        QListWidget {
+            background-color: #ffffff;
+            color: #333333;
+            border: 1px solid #cccccc;
+        }
+        QListWidget::item:selected {
+            background-color: #28a745;
+            color: #ffffff;
+        }
+        QMessageBox {
+            background-color: #f5f5f5;
+            color: #333333;
+        }
+        QInputDialog {
+            background-color: #f5f5f5;
+            color: #333333;
+        }
+    """)
     browser = Browser()
     browser.show()
     sys.exit(app.exec())
