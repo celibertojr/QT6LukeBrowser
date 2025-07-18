@@ -1,3 +1,4 @@
+
 import sys
 import json
 import os
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QAction
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
+from PyQt6.QtWebEngineCore import QWebEngineUrlRequestInterceptor
 from PyQt6.QtCore import QUrl
 
 class CustomWebEnginePage(QWebEnginePage):
@@ -74,6 +76,21 @@ class ManageBlockedSitesDialog(QDialog):
             self.remove_callback(url)
             self.update_list()
 
+
+class DomainBlocker(QWebEngineUrlRequestInterceptor):
+    def __init__(self, blocked_domains):
+        super().__init__()
+        self.blocked_domains = blocked_domains
+
+    def interceptRequest(self, info):
+        from urllib.parse import urlparse
+        url = info.requestUrl().toString()
+        domain = urlparse(url).netloc.lower()
+        for blocked in self.blocked_domains:
+            blocked_domain = urlparse(blocked).netloc.lower()
+            if blocked_domain and blocked_domain in domain:
+                info.block(True)
+                return
 class Browser(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -97,6 +114,9 @@ class Browser(QMainWindow):
         self.private_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
 
         self.setup_ui()
+        self.blocker = DomainBlocker(self.blocked_sites)
+        QWebEngineProfile.defaultProfile().setUrlRequestInterceptor(self.blocker)
+        self.private_profile.setUrlRequestInterceptor(self.blocker)
         self.setup_menus()
         self.setup_signals()
 
@@ -124,9 +144,6 @@ class Browser(QMainWindow):
         self.new_tab_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_FileDialogNewFolder), "")
         self.new_tab_button.setToolTip("Abrir nova aba")
 
-        self.new_private_tab_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_DirIcon), "")
-        self.new_private_tab_button.setToolTip("Abrir aba anônima")
-
         self.bookmark_button = QPushButton(self.style().standardIcon(self.style().StandardPixmap.SP_DialogYesButton), "")
         self.bookmark_button.setToolTip("Adicionar a página atual aos favoritos")
 
@@ -141,7 +158,6 @@ class Browser(QMainWindow):
         nav_layout.addWidget(self.forward_button)
         nav_layout.addWidget(self.reload_button)
         nav_layout.addWidget(self.new_tab_button)
-        nav_layout.addWidget(self.new_private_tab_button)
         nav_layout.addWidget(self.bookmark_button)
         nav_layout.addWidget(self.url_bar)
 
@@ -206,7 +222,6 @@ class Browser(QMainWindow):
         self.forward_button.clicked.connect(self.forward)
         self.reload_button.clicked.connect(self.reload)
         self.new_tab_button.clicked.connect(self.add_new_tab)
-        self.new_private_tab_button.clicked.connect(self.add_new_private_tab)
         self.bookmark_button.clicked.connect(self.add_to_bookmarks)
         self.new_page_action.triggered.connect(self.nova_pagina)
         self.private_tab_action.triggered.connect(self.add_new_private_tab)
@@ -240,16 +255,7 @@ class Browser(QMainWindow):
                 with open(self.blocked_sites_file, "r") as f:
                     data = json.load(f)
                     if isinstance(data, list):
-                        normalized_urls = []
-                        for url in data:
-                            if isinstance(url, str):
-                                qurl = QUrl(url)
-                                if qurl.isValid():
-                                    try:
-                                        normalized_urls.append(qurl.toString(QUrl.ComponentFormattingOption.FullyDecoded))
-                                    except Exception as e:
-                                        print(f"Erro ao normalizar URL {url}: {e}")
-                        return normalized_urls
+                        return [url for url in data if isinstance(url, str)]
             return []
         except (json.JSONDecodeError, IOError) as e:
             QMessageBox.warning(self, "Erro", f"Falha ao carregar lista de sites bloqueados: {e}")
@@ -273,11 +279,7 @@ class Browser(QMainWindow):
             if not qurl.isValid():
                 QMessageBox.warning(self, "URL Inválida", "Por favor, insira uma URL válida.")
                 return
-            try:
-                normalized_url = qurl.toString(QUrl.ComponentFormattingOption.FullyDecoded)
-            except Exception as e:
-                QMessageBox.warning(self, "Erro", f"Falha ao normalizar URL: {e}")
-                return
+            normalized_url = qurl.toString(QUrl.UrlFormattingOption.FullyDecoded)
             if normalized_url not in self.blocked_sites:
                 self.blocked_sites.append(normalized_url)
                 self.save_blocked_sites()
@@ -301,6 +303,7 @@ class Browser(QMainWindow):
             action = QAction("Nenhum favorito", self)
             action.setEnabled(False)
             self.bookmarks_menu.addAction(action)
+        self.bookmarks_menu.setEnabled(bool(self.bookmarks))
         for bookmark in self.bookmarks:
             if isinstance(bookmark, dict) and "title" in bookmark and "url" in bookmark:
                 action = QAction(bookmark["title"], self)
@@ -328,7 +331,7 @@ class Browser(QMainWindow):
                 current_web_view.setUrl(QUrl(url))
 
     def add_new_tab(self, qurl=None, label="Nova Aba"):
-        if qurl is None or not isinstance(qurl, QUrl) or not qurl.isValid():
+        if qurl is None or not isinstance(qurl, QUrl):
             qurl = QUrl("https://www.google.com")
         web_view = QWebEngineView()
         page = CustomWebEnginePage(parent=web_view)
@@ -360,15 +363,15 @@ class Browser(QMainWindow):
         if self.tabs.count() > 1:
             web_view = self.tabs.widget(index)
             if web_view:
-                try:
-                    web_view.urlChanged.disconnect()
-                    web_view.loadProgress.disconnect()
-                    web_view.loadFinished.disconnect()
-                    web_view.titleChanged.disconnect()
-                    if web_view.page().profile() != self.private_profile:
+                web_view.urlChanged.disconnect()
+                web_view.loadProgress.disconnect()
+                web_view.loadFinished.disconnect()
+                web_view.titleChanged.disconnect()
+                if web_view.page().profile() != self.private_profile:
+                    try:
                         web_view.urlChanged.disconnect(self.add_to_history)
-                except Exception as e:
-                    print(f"Erro ao desconectar sinais da aba: {e}")
+                    except TypeError:
+                        pass  # Já desconectado ou não conectado
             self.tabs.removeTab(index)
 
     def navigate_to_url(self):
@@ -383,22 +386,10 @@ class Browser(QMainWindow):
             QMessageBox.warning(self, "URL Inválida", "A URL fornecida é inválida ou malformada.")
             return
         # Verificar se a URL está na lista de sites bloqueados
-        try:
-            normalized_url = qurl.toString(QUrl.ComponentFormattingOption.FullyDecoded)
-        except Exception as e:
-            QMessageBox.warning(self, "Erro", f"Falha ao normalizar URL: {e}")
-            return
+        normalized_url = qurl.toString(QUrl.UrlFormattingOption.FullyDecoded)
         if normalized_url in self.blocked_sites:
             QMessageBox.warning(self, "Acesso Bloqueado", "Este site contém conteúdo perigoso e está bloqueado.")
             return
-        # Bloqueio por domínio base
-        from urllib.parse import urlparse
-        domain = urlparse(normalized_url).netloc.lower()
-        for blocked in self.blocked_sites:
-            blocked_domain = urlparse(blocked).netloc.lower()
-            if blocked_domain and blocked_domain in domain:
-                QMessageBox.warning(self, "Acesso Bloqueado", f"O domínio {blocked_domain} está bloqueado.")
-                return
         current_web_view = self.tabs.currentWidget()
         if current_web_view:
             current_web_view.setUrl(qurl)
@@ -437,7 +428,7 @@ class Browser(QMainWindow):
     def reload(self):
         current_web_view = self.tabs.currentWidget()
         if current_web_view:
-            current_web_view.reload()
+            current_web_view.setUrl(current_web_view.url())  # Forçar recarregamento
 
     def add_to_history(self, qurl):
         current_web_view = self.tabs.currentWidget()
